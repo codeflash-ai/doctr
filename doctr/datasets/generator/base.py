@@ -42,9 +42,15 @@ def synthesize_text_img(
     text_w, text_h = right - left, bottom - top
     h, w = int(round(1.3 * text_h)), int(round(1.1 * text_w))
     # If single letter, make the image square, otherwise expand to meet the text size
-    img_size = (h, w) if len(text) > 1 else (max(h, w), max(h, w))
+    if len(text) > 1:
+        img_size0, img_size1 = h, w
+    else:
+        max_hw = max(h, w)
+        img_size0, img_size1 = max_hw, max_hw
 
-    img = Image.new("RGB", img_size[::-1], color=background_color)
+    img_size = (img_size0, img_size1)
+    img_size_reverse = (img_size1, img_size0)
+    img = Image.new("RGB", img_size_reverse, color=background_color)
     d = ImageDraw.Draw(img)
 
     # Offset so that the text is centered
