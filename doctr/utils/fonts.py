@@ -5,8 +5,11 @@
 
 import logging
 import platform
+from functools import lru_cache
 
 from PIL import ImageFont
+
+_SYSTEM_FONT = None
 
 __all__ = ["get_font"]
 
@@ -24,15 +27,34 @@ def get_font(font_family: str | None = None, font_size: int = 13) -> ImageFont.F
     # Font selection
     if font_family is None:
         try:
-            font = ImageFont.truetype("FreeMono.ttf" if platform.system() == "Linux" else "Arial.ttf", font_size)
+            system_font = _get_system_font()
+            font = _cached_truetype(system_font, font_size)
         except OSError:  # pragma: no cover
-            font = ImageFont.load_default()  # type: ignore[assignment]
+            font = _cached_load_default()
             logging.warning(
                 "unable to load recommended font family. Loading default PIL font,"
                 "font size issues may be expected."
                 "To prevent this, it is recommended to specify the value of 'font_family'."
             )
     else:  # pragma: no cover
-        font = ImageFont.truetype(font_family, font_size)
+        font = _cached_truetype(font_family, font_size)
 
     return font
+
+
+def _get_system_font() -> str:
+    global _SYSTEM_FONT
+    if _SYSTEM_FONT is not None:
+        return _SYSTEM_FONT
+    _SYSTEM_FONT = "FreeMono.ttf" if platform.system() == "Linux" else "Arial.ttf"
+    return _SYSTEM_FONT
+
+
+@lru_cache(maxsize=32)
+def _cached_truetype(font_family: str, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return ImageFont.truetype(font_family, font_size)
+
+
+@lru_cache(maxsize=8)
+def _cached_load_default() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return ImageFont.load_default()  # type: ignore[assignment]
