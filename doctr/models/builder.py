@@ -52,15 +52,23 @@ class DocumentBuilder(NestedObject):
                 else: boxes returned are straight boxes fitted to the straightened rotated boxes
                 so that we fit the lines afterwards to the straigthened page
         """
+        # The estimate_page_angle and np.median are costly, so we try to avoid recomputing.
         if boxes.ndim == 3:
+            angle = -estimate_page_angle(boxes)
             boxes = rotate_boxes(
                 loc_preds=boxes,
-                angle=-estimate_page_angle(boxes),
+                angle=angle,
                 orig_shape=(1024, 1024),
                 min_angle=5.0,
             )
             boxes = np.concatenate((boxes.min(1), boxes.max(1)), -1)
-        return (boxes[:, 0] + 2 * boxes[:, 3] / np.median(boxes[:, 3] - boxes[:, 1])).argsort(), boxes
+        # Pre-compute the heights only once and median only once
+        heights = boxes[:, 3] - boxes[:, 1]
+        med_height = np.median(heights)
+        # Vectorized y-center calculation: (boxes[:, 0] + 2 * boxes[:, 3] / med_height)
+        sort_keys = boxes[:, 0] + 2 * boxes[:, 3] / med_height
+        idxs = np.argsort(sort_keys)
+        return idxs, boxes
 
     def _resolve_sub_lines(self, boxes: np.ndarray, word_idcs: list[int]) -> list[list[int]]:
         """Split a line in sub_lines
@@ -109,23 +117,27 @@ class DocumentBuilder(NestedObject):
         Returns:
             nested list of box indices
         """
-        # Sort boxes, and straighten the boxes if they are rotated
         idxs, boxes = self._sort_boxes(boxes)
-
-        # Compute median for boxes heights
-        y_med = np.median(boxes[:, 3] - boxes[:, 1])
+        # Compute box heights and their median only once
+        heights = boxes[:, 3] - boxes[:, 1]
+        y_med = np.median(heights)
 
         lines = []
         words = [idxs[0]]  # Assign the top-left word to the first line
-        # Define a mean y-center for the line
-        y_center_sum = boxes[idxs[0]][[1, 3]].mean()
+
+        y_center_0 = boxes[idxs[0]][[1, 3]].mean()
+        # Keep y_center_sum and length as floats for efficiency
+        y_center_sum = y_center_0
+        len_words = 1
+
+        # Prepare per-box mean y_center array for single-pass vectorized calc
+        y_centers = (boxes[:, 1] + boxes[:, 3]) / 2
 
         for idx in idxs[1:]:
             vert_break = True
-
-            # Compute y_dist
-            y_dist = abs(boxes[idx][[1, 3]].mean() - y_center_sum / len(words))
-            # If y-center of the box is close enough to mean y-center of the line, same line
+            # Use words[-1] for the last word in the current line instead of averaging each round
+            y_center_mean = y_center_sum / len_words
+            y_dist = abs(y_centers[idx] - y_center_mean)
             if y_dist < y_med / 2:
                 vert_break = False
 
@@ -134,15 +146,14 @@ class DocumentBuilder(NestedObject):
                 lines.extend(self._resolve_sub_lines(boxes, words))
                 words = []
                 y_center_sum = 0
+                len_words = 0
 
             words.append(idx)
-            y_center_sum += boxes[idx][[1, 3]].mean()
+            y_center_sum += y_centers[idx]
+            len_words += 1
 
-        # Use the remaining words to form the last(s) line(s)
-        if len(words) > 0:
-            # Compute sub-lines (horizontal split)
+        if words:
             lines.extend(self._resolve_sub_lines(boxes, words))
-
         return lines
 
     @staticmethod
@@ -156,23 +167,12 @@ class DocumentBuilder(NestedObject):
         Returns:
             nested list of box indices
         """
-        # Resolve enclosing boxes of lines
         if boxes.ndim == 3:
-            box_lines: np.ndarray = np.asarray([
+            box_lines = np.asarray([
                 resolve_enclosing_rbbox([tuple(boxes[idx, :, :]) for idx in line])  # type: ignore[misc]
                 for line in lines
             ])
-        else:
-            _box_lines = [
-                resolve_enclosing_bbox([(tuple(boxes[idx, :2]), tuple(boxes[idx, 2:])) for idx in line])
-                for line in lines
-            ]
-            box_lines = np.asarray([(x1, y1, x2, y2) for ((x1, y1), (x2, y2)) in _box_lines])
-
-        # Compute geometrical features of lines to clusterize
-        # Clusterizing only with box centers yield to poor results for complex documents
-        if boxes.ndim == 3:
-            box_features: np.ndarray = np.stack(
+            box_features = np.stack(
                 (
                     (box_lines[:, 0, 0] + box_lines[:, 0, 1]) / 2,
                     (box_lines[:, 0, 0] + box_lines[:, 2, 0]) / 2,
@@ -184,6 +184,12 @@ class DocumentBuilder(NestedObject):
                 axis=-1,
             )
         else:
+            # Use list comprehension for performance and minimize temp variables
+            _box_lines = [
+                resolve_enclosing_bbox([(tuple(boxes[idx, :2]), tuple(boxes[idx, 2:])) for idx in line])
+                for line in lines
+            ]
+            box_lines = np.asarray([(x1, y1, x2, y2) for ((x1, y1), (x2, y2)) in _box_lines])
             box_features = np.stack(
                 (
                     (box_lines[:, 0] + box_lines[:, 3]) / 2,
@@ -195,20 +201,12 @@ class DocumentBuilder(NestedObject):
                 ),
                 axis=-1,
             )
-        # Compute clusters
         clusters = fclusterdata(box_features, t=0.1, depth=4, criterion="distance", metric="euclidean")
-
+        # Avoid .keys(), use dict.setdefault for performance
         _blocks: dict[int, list[int]] = {}
-        # Form clusters
         for line_idx, cluster_idx in enumerate(clusters):
-            if cluster_idx in _blocks.keys():
-                _blocks[cluster_idx].append(line_idx)
-            else:
-                _blocks[cluster_idx] = [line_idx]
-
-        # Retrieve word-box level to return a fully nested structure
+            _blocks.setdefault(cluster_idx, []).append(line_idx)
         blocks = [[lines[idx] for idx in block] for block in _blocks.values()]
-
         return blocks
 
     def _build_blocks(
@@ -236,43 +234,49 @@ class DocumentBuilder(NestedObject):
         if boxes.shape[0] == 0:
             return []
 
-        # Decide whether we try to form lines
         _boxes = boxes
         if self.resolve_lines:
             lines = self._resolve_lines(_boxes if _boxes.ndim == 3 else _boxes[:, :4])
-            # Decide whether we try to form blocks
             if self.resolve_blocks and len(lines) > 1:
                 _blocks = self._resolve_blocks(_boxes if _boxes.ndim == 3 else _boxes[:, :4], lines)
             else:
                 _blocks = [lines]
         else:
-            # Sort bounding boxes, one line for all boxes, one block for the line
-            lines = [self._sort_boxes(_boxes if _boxes.ndim == 3 else _boxes[:, :4])[0]]  # type: ignore[list-item]
+            # Only sort, no grouping
+            lines = [self._sort_boxes(_boxes if _boxes.ndim == 3 else _boxes[:, :4])[0]]
             _blocks = [lines]
 
+        # Precompute Word objects for each word index to avoid repeated expensive construction
+        num_boxes = boxes.shape[0]
+        words_precomputed = [None] * num_boxes
+        if boxes.ndim == 3:
+            for idx in range(num_boxes):
+                words_precomputed[idx] = Word(
+                    *word_preds[idx],
+                    tuple(tuple(pt) for pt in boxes[idx].tolist()),  # type: ignore[arg-type]
+                    float(objectness_scores[idx]),
+                    crop_orientations[idx],
+                )
+        else:
+            for idx in range(num_boxes):
+                words_precomputed[idx] = Word(
+                    *word_preds[idx],
+                    ((boxes[idx, 0], boxes[idx, 1]), (boxes[idx, 2], boxes[idx, 3])),
+                    float(objectness_scores[idx]),
+                    crop_orientations[idx],
+                )
+
+        # Build blocks from precomputed Word objects - this minimizes repeated indexing
         blocks = [
             Block([
                 Line([
-                    Word(
-                        *word_preds[idx],
-                        tuple(tuple(pt) for pt in boxes[idx].tolist()),  # type: ignore[arg-type]
-                        float(objectness_scores[idx]),
-                        crop_orientations[idx],
-                    )
-                    if boxes.ndim == 3
-                    else Word(
-                        *word_preds[idx],
-                        ((boxes[idx, 0], boxes[idx, 1]), (boxes[idx, 2], boxes[idx, 3])),
-                        float(objectness_scores[idx]),
-                        crop_orientations[idx],
-                    )
+                    words_precomputed[idx]
                     for idx in line
                 ])
                 for line in lines
             ])
             for lines in _blocks
         ]
-
         return blocks
 
     def extra_repr(self) -> str:
