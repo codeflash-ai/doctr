@@ -142,21 +142,22 @@ class VIPTR(RecognitionModel, nn.Module):
         return_model_output: bool = False,
         return_preds: bool = False,
     ) -> dict[str, Any]:
+        gt = seq_len = None
         if target is not None:
             _gt, _seq_len = self.build_target(target)
-            gt, seq_len = torch.from_numpy(_gt).to(dtype=torch.long), torch.tensor(_seq_len)
-            gt, seq_len = gt.to(x.device), seq_len.to(x.device)
-
+            gt = torch.from_numpy(_gt).to(device=x.device, dtype=torch.long)
+            seq_len = torch.tensor(_seq_len, device=x.device)
         if self.training and target is None:
             raise ValueError("Need to provide labels during training")
 
         features = self.feat_extractor(x)["features"]  # (B, max_len, embed_dim)
         B, N, E = features.size()
-        logits = self.head(features).view(B, N, len(self.vocab) + 1)
-
+        num_classes = len(self.vocab) + 1
+        logits = self.head(features).view(B, N, num_classes)
         decoded_features = _bf16_to_float32(logits)
 
         out: dict[str, Any] = {}
+
         if self.exportable:
             out["logits"] = decoded_features
             return out
@@ -165,13 +166,8 @@ class VIPTR(RecognitionModel, nn.Module):
             out["out_map"] = decoded_features
 
         if target is None or return_preds:
-            # Disable for torch.compile compatibility
-            @torch.compiler.disable
-            def _postprocess(decoded_features: torch.Tensor) -> list[tuple[str, float]]:
-                return self.postprocessor(decoded_features)
-
-            # Post-process boxes
-            out["preds"] = _postprocess(decoded_features)
+            # Call postprocessor directly (eliminates inner function allocation per call)
+            out["preds"] = self.postprocessor(decoded_features)
 
         if target is not None:
             out["loss"] = self.compute_loss(decoded_features, gt, seq_len, len(self.vocab))
@@ -197,8 +193,7 @@ class VIPTR(RecognitionModel, nn.Module):
             The loss of the model on the batch
         """
         batch_len = model_output.shape[0]
-        input_length = model_output.shape[1] * torch.ones(size=(batch_len,), dtype=torch.int32)
-        # N x T x C -> T x N x C
+        input_length = torch.full((batch_len,), model_output.shape[1], dtype=torch.int32)
         logits = model_output.permute(1, 0, 2)
         probs = F.log_softmax(logits, dim=-1)
         ctc_loss = F.ctc_loss(
