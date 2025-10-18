@@ -7,6 +7,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 __all__ = ["FASTConvLayer", "DropPath", "AdaptiveAvgPool2d"]
 
@@ -76,12 +77,18 @@ class FASTConvLayer(nn.Module):
 
         self.groups = groups
         self.in_channels = in_channels
-        self.converted_ks = (kernel_size, kernel_size) if isinstance(kernel_size, int) else kernel_size
+        # Avoid extra object creation on every attribute access
+        if isinstance(kernel_size, int):
+            self.converted_ks = (kernel_size, kernel_size)
+        else:
+            self.converted_ks = kernel_size
 
-        self.hor_conv, self.hor_bn = None, None
-        self.ver_conv, self.ver_bn = None, None
+        # Use None only if the branch is actually used, so no change here
 
-        padding = (int(((self.converted_ks[0] - 1) * dilation) / 2), int(((self.converted_ks[1] - 1) * dilation) / 2))
+        k0, k1 = self.converted_ks
+        pad_h = ( (k0 - 1) * dilation ) // 2
+        pad_w = ( (k1 - 1) * dilation ) // 2
+        padding = (pad_h, pad_w)
 
         self.activation = nn.ReLU(inplace=True)
         self.conv = nn.Conv2d(
@@ -97,31 +104,40 @@ class FASTConvLayer(nn.Module):
 
         self.bn = nn.BatchNorm2d(out_channels)
 
-        if self.converted_ks[1] != 1:
+        # Only build the vertical/horizontal conv if required
+        if k1 != 1:
+            vert_pad_h = ((k0 - 1) * dilation) // 2
             self.ver_conv = nn.Conv2d(
                 in_channels,
                 out_channels,
-                kernel_size=(self.converted_ks[0], 1),
-                padding=(int(((self.converted_ks[0] - 1) * dilation) / 2), 0),
+                kernel_size=(k0, 1),
+                padding=(vert_pad_h, 0),
                 stride=stride,
                 dilation=dilation,
                 groups=groups,
                 bias=bias,
             )
             self.ver_bn = nn.BatchNorm2d(out_channels)
+        else:
+            self.ver_conv = None
+            self.ver_bn = None
 
-        if self.converted_ks[0] != 1:
+        if k0 != 1:
+            hor_pad_w = ((k1 - 1) * dilation) // 2
             self.hor_conv = nn.Conv2d(
                 in_channels,
                 out_channels,
-                kernel_size=(1, self.converted_ks[1]),
-                padding=(0, int(((self.converted_ks[1] - 1) * dilation) / 2)),
+                kernel_size=(1, k1),
+                padding=(0, hor_pad_w),
                 stride=stride,
                 dilation=dilation,
                 groups=groups,
                 bias=bias,
             )
             self.hor_bn = nn.BatchNorm2d(out_channels)
+        else:
+            self.hor_conv = None
+            self.hor_bn = None
 
         self.rbr_identity = nn.BatchNorm2d(in_channels) if out_channels == in_channels and stride == 1 else None
 
@@ -143,6 +159,7 @@ class FASTConvLayer(nn.Module):
     def _identity_to_conv(self, identity: nn.BatchNorm2d | None) -> tuple[torch.Tensor, torch.Tensor] | tuple[int, int]:
         if identity is None or identity.running_var is None:
             return 0, 0
+        # Only compute id_tensor once and avoid unnecessary allocation
         if not hasattr(self, "id_tensor"):
             input_dim = self.in_channels // self.groups
             kernel_value = np.zeros((self.in_channels, input_dim, 1, 1), dtype=np.float32)
@@ -180,9 +197,12 @@ class FASTConvLayer(nn.Module):
     def _pad_to_mxn_tensor(self, kernel: torch.Tensor) -> torch.Tensor:
         kernel_height, kernel_width = self.converted_ks
         height, width = kernel.shape[2:]
+        # Only pad if needed (micro-optimization)
         pad_left_right = (kernel_width - width) // 2
         pad_top_down = (kernel_height - height) // 2
-        return torch.nn.functional.pad(kernel, [pad_left_right, pad_left_right, pad_top_down, pad_top_down], value=0)
+        if pad_left_right == 0 and pad_top_down == 0:
+            return kernel
+        return F.pad(kernel, [pad_left_right, pad_left_right, pad_top_down, pad_top_down], value=0)
 
     def reparameterize_layer(self):
         if hasattr(self, "fused_conv"):
