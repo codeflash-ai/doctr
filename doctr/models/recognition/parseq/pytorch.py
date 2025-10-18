@@ -47,9 +47,10 @@ class CharEmbedding(nn.Module):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.d_model = d_model
+        self._scale = torch.tensor(d_model, dtype=torch.float32).sqrt()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return math.sqrt(self.d_model) * self.embedding(x)
+        return self.embedding(x) * self._scale
 
 
 class PARSeqDecoder(nn.Module):
