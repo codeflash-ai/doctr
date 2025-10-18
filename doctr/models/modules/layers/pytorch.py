@@ -76,18 +76,26 @@ class FASTConvLayer(nn.Module):
 
         self.groups = groups
         self.in_channels = in_channels
-        self.converted_ks = (kernel_size, kernel_size) if isinstance(kernel_size, int) else kernel_size
+
+        # Avoid repeatedly checking kernel_size type
+        ks_is_int = isinstance(kernel_size, int)
+        k_h, k_w = (kernel_size, kernel_size) if ks_is_int else kernel_size
+        self.converted_ks = (k_h, k_w)
 
         self.hor_conv, self.hor_bn = None, None
         self.ver_conv, self.ver_bn = None, None
 
-        padding = (int(((self.converted_ks[0] - 1) * dilation) / 2), int(((self.converted_ks[1] - 1) * dilation) / 2))
+        # Precompute dilation*size
+        dil_kh = (k_h - 1) * dilation
+        dil_kw = (k_w - 1) * dilation
+        padding = (dil_kh // 2, dil_kw // 2)
 
         self.activation = nn.ReLU(inplace=True)
+
         self.conv = nn.Conv2d(
             in_channels,
             out_channels,
-            kernel_size=self.converted_ks,
+            kernel_size=(k_h, k_w),
             stride=stride,
             padding=padding,
             dilation=dilation,
@@ -97,12 +105,14 @@ class FASTConvLayer(nn.Module):
 
         self.bn = nn.BatchNorm2d(out_channels)
 
-        if self.converted_ks[1] != 1:
+        if k_w != 1:
+            # Precompute ver_conv's padding
+            ver_padding = (dil_kh // 2, 0)
             self.ver_conv = nn.Conv2d(
                 in_channels,
                 out_channels,
-                kernel_size=(self.converted_ks[0], 1),
-                padding=(int(((self.converted_ks[0] - 1) * dilation) / 2), 0),
+                kernel_size=(k_h, 1),
+                padding=ver_padding,
                 stride=stride,
                 dilation=dilation,
                 groups=groups,
@@ -110,12 +120,14 @@ class FASTConvLayer(nn.Module):
             )
             self.ver_bn = nn.BatchNorm2d(out_channels)
 
-        if self.converted_ks[0] != 1:
+        if k_h != 1:
+            # Precompute hor_conv's padding
+            hor_padding = (0, dil_kw // 2)
             self.hor_conv = nn.Conv2d(
                 in_channels,
                 out_channels,
-                kernel_size=(1, self.converted_ks[1]),
-                padding=(0, int(((self.converted_ks[1] - 1) * dilation) / 2)),
+                kernel_size=(1, k_w),
+                padding=hor_padding,
                 stride=stride,
                 dilation=dilation,
                 groups=groups,
@@ -156,11 +168,12 @@ class FASTConvLayer(nn.Module):
         return kernel * t, identity.bias - identity.running_mean * identity.weight / std  # type: ignore[operator]
 
     def _fuse_bn_tensor(self, conv: nn.Conv2d, bn: nn.BatchNorm2d) -> tuple[torch.Tensor, torch.Tensor]:
+        # Avoid attribute lookup in loop
         kernel = conv.weight
         kernel = self._pad_to_mxn_tensor(kernel)
-        std = (bn.running_var + bn.eps).sqrt()  # type: ignore
+        std = (bn.running_var + bn.eps).sqrt()
         t = (bn.weight / std).reshape(-1, 1, 1, 1)
-        return kernel * t, bn.bias - bn.running_mean * bn.weight / std  # type: ignore[operator]
+        return kernel * t, bn.bias - bn.running_mean * bn.weight / std
 
     def _get_equivalent_kernel_bias(self) -> tuple[torch.Tensor, torch.Tensor]:
         kernel_mxn, bias_mxn = self._fuse_bn_tensor(self.conv, self.bn)
@@ -178,11 +191,19 @@ class FASTConvLayer(nn.Module):
         return kernel_mxn, bias_mxn
 
     def _pad_to_mxn_tensor(self, kernel: torch.Tensor) -> torch.Tensor:
+        # Use local variables for shape lookup to avoid attribute overhead
         kernel_height, kernel_width = self.converted_ks
-        height, width = kernel.shape[2:]
+        height, width = kernel.shape[2], kernel.shape[3]
         pad_left_right = (kernel_width - width) // 2
         pad_top_down = (kernel_height - height) // 2
-        return torch.nn.functional.pad(kernel, [pad_left_right, pad_left_right, pad_top_down, pad_top_down], value=0)
+        if pad_left_right == 0 and pad_top_down == 0:
+            return kernel
+        # torch.nn.functional.pad expects pads in [left, right, top, bottom] order
+        return torch.nn.functional.pad(
+            kernel,
+            [pad_left_right, pad_left_right, pad_top_down, pad_top_down],
+            value=0
+        )
 
     def reparameterize_layer(self):
         if hasattr(self, "fused_conv"):
