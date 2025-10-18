@@ -7,7 +7,6 @@ import string
 import unicodedata
 from collections.abc import Sequence
 from collections.abc import Sequence as SequenceType
-from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -136,6 +135,9 @@ def encode_sequences(
     if 0 <= eos < len(vocab):
         raise ValueError("argument 'eos' needs to be outside of vocab possible indices")
 
+    # OPTIMIZATION: build vocab_index dict once, avoid repeated index/search
+    vocab_index = {c: i for i, c in enumerate(vocab)}
+
     if not isinstance(target_size, int) or dynamic_seq_length:
         # Maximum string length + EOS
         max_length = max(len(w) for w in sequences) + 1
@@ -151,15 +153,29 @@ def encode_sequences(
             raise ValueError("argument 'pad' needs to be outside of vocab possible indices")
         # In that case, add EOS at the end of the word before padding
         default_symbol = pad
+        add_eos = True
     else:  # pad with eos symbol
         default_symbol = eos
+        add_eos = False
     encoded_data: np.ndarray = np.full([len(sequences), target_size], default_symbol, dtype=np.int32)
 
-    # Encode the strings
-    for idx, seq in enumerate(map(partial(encode_string, vocab=vocab), sequences)):
-        if isinstance(pad, int):  # add eos at the end of the sequence
+    # OPTIMIZATION: encode all sequences in a batch, avoid map/partial overhead and double loops
+    # Reuse vocab_index for all; use fast list comprehensions
+    # Avoid partial, directly encode in a tight for-loop
+
+    for idx, string in enumerate(sequences):
+        try:
+            seq = [vocab_index[c] for c in string]
+        except KeyError as e:
+            missing_chars = [char for char in string if char not in vocab]
+            raise ValueError(
+                f"Some characters cannot be found in 'vocab': {set(missing_chars)}.\n"
+                f"Please check the input string `{string}` and the vocabulary `{vocab}`"
+            ) from e
+        if add_eos:
             seq.append(eos)
-        encoded_data[idx, : min(len(seq), target_size)] = seq[: min(len(seq), target_size)]
+        l = min(len(seq), target_size)
+        encoded_data[idx, :l] = seq[:l]
 
     if isinstance(sos, int):  # place sos symbol at the beginning of each sequence
         if 0 <= sos < len(vocab):
