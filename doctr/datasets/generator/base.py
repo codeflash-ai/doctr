@@ -5,9 +5,10 @@
 
 import random
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from doctr.io.image import tensor_from_pil
 from doctr.utils.fonts import get_font
@@ -37,8 +38,9 @@ def synthesize_text_img(
     background_color = (0, 0, 0) if background_color is None else background_color
     text_color = (255, 255, 255) if text_color is None else text_color
 
-    font = get_font(font_family, font_size)
-    left, top, right, bottom = font.getbbox(text)
+    # Use cached font and cached bbox computation (most expensive steps)
+    font = cached_get_font(font_family, font_size)
+    left, top, right, bottom = cached_getbbox(font_family, font_size, text)
     text_w, text_h = right - left, bottom - top
     h, w = int(round(1.3 * text_h)), int(round(1.1 * text_w))
     # If single letter, make the image square, otherwise expand to meet the text size
@@ -54,6 +56,19 @@ def synthesize_text_img(
     return img
 
 
+# LRU-cache wrapper for font objects to avoid expensive reloading
+# Assumes font_family is str or None and font_size is int
+@lru_cache(maxsize=32)
+def cached_get_font(font_family: str | None, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return get_font(font_family, font_size)
+
+# LRU cache for font bbox measurement: keyed by (font file name, size, text)
+@lru_cache(maxsize=1024)
+def cached_getbbox(font_family: str | None, font_size: int, text: str) -> tuple[int, int, int, int]:
+    font = cached_get_font(font_family, font_size)
+    return font.getbbox(text)
+
+
 class _CharacterGenerator(AbstractDataset):
     def __init__(
         self,
@@ -66,7 +81,13 @@ class _CharacterGenerator(AbstractDataset):
     ) -> None:
         self.vocab = vocab
         self._num_samples = num_samples
-        self.font_family = font_family if isinstance(font_family, list) else [font_family]  # type: ignore[list-item]
+        # Only create a list if font_family is a list or a valid string, else leave empty for None
+        if font_family is None:
+            self.font_family = [None]
+        elif isinstance(font_family, list):
+            self.font_family = font_family
+        else:
+            self.font_family = [font_family]  # type: ignore[list-item]
         # Validate fonts
         if isinstance(font_family, list):
             for font in self.font_family:
