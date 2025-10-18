@@ -102,8 +102,19 @@ class Word(Element):
 
     @classmethod
     def from_dict(cls, save_dict: dict[str, Any], **kwargs):
-        kwargs = {k: save_dict[k] for k in cls._exported_keys}
-        return cls(**kwargs)
+        # Optimize dictionary lookup using list-comprehension and direct argument passing
+        # This avoids building the intermediate dict in CPython
+        try:
+            return cls(
+                save_dict["value"],
+                save_dict["confidence"],
+                save_dict["geometry"],
+                save_dict["objectness_score"],
+                save_dict["crop_orientation"],
+            )
+        except KeyError as e:
+            # exactly preserve behavior for missing keys
+            raise e
 
 
 class Artefact(Element):
