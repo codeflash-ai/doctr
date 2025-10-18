@@ -44,7 +44,9 @@ class Element(NestedObject):
 
     def export(self) -> dict[str, Any]:
         """Exports the object into a nested dict format"""
-        export_dict = {k: getattr(self, k) for k in self._exported_keys}
+        export_dict = {}
+        for k in self._exported_keys:
+            export_dict[k] = getattr(self, k)
         for children_name in self._children_names:
             if children_name in ["predictions"]:
                 export_dict[children_name] = {
