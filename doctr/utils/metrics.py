@@ -106,12 +106,13 @@ class TextMatch:
         if self.total == 0:
             raise AssertionError("you need to update the metric before getting the summary")
 
-        return dict(
-            raw=self.raw / self.total,
-            caseless=self.caseless / self.total,
-            anyascii=self.anyascii / self.total,
-            unicase=self.unicase / self.total,
-        )
+        total = self.total
+        return {
+            "raw": self.raw / total,
+            "caseless": self.caseless / total,
+            "anyascii": self.anyascii / total,
+            "unicase": self.unicase / total,
+        }
 
     def reset(self) -> None:
         self.raw = 0
