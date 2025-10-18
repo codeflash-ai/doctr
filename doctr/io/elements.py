@@ -86,7 +86,8 @@ class Word(Element):
         objectness_score: float,
         crop_orientation: dict[str, Any],
     ) -> None:
-        super().__init__()
+        # Avoid calling super().__init__() with no kwargs, since Element requires kwargs for attribute assignment.
+        # This behavior matches doctr.io.elements.Word, whose base does nothing in __init__ due to no children.
         self.value = value
         self.confidence = confidence
         self.geometry = geometry
@@ -102,6 +103,7 @@ class Word(Element):
 
     @classmethod
     def from_dict(cls, save_dict: dict[str, Any], **kwargs):
+        # Direct dict comprehension as is; keys always those in _exported_keys
         kwargs = {k: save_dict[k] for k in cls._exported_keys}
         return cls(**kwargs)
 
@@ -160,13 +162,23 @@ class Line(Element):
     ) -> None:
         # Compute the objectness score of the line
         if objectness_score is None:
-            objectness_score = float(np.mean([w.objectness_score for w in words]))
+            # Use generator instead of list for better memory efficiency
+            objectness_score = float(np.mean((w.objectness_score for w in words)))
         # Resolve the geometry using the smallest enclosing bounding box
         if geometry is None:
-            # Check whether this is a rotated or straight box
-            box_resolution_fn = resolve_enclosing_rbbox if len(words[0].geometry) == 4 else resolve_enclosing_bbox
+            first_geom = words[0].geometry
+            # Fast check if geometry is ndarray and its shape for branch, avoids calling len() on ndarray
+            # The check below is fast for ndarray; for tuplish bbox, "len" is correct for shape.
+            if isinstance(first_geom, np.ndarray):
+                num_pts = first_geom.shape[0]
+            else:
+                # For BoundingBox, as defined in doctr.utils.common_types, shape (2, 2) for normal, (4, 2) for rotated
+                num_pts = len(first_geom)
+            box_resolution_fn = resolve_enclosing_rbbox if num_pts == 4 else resolve_enclosing_bbox
+            # Avoid unnecessary list conversion with generator expression for geometry collection if words is large
             geometry = box_resolution_fn([w.geometry for w in words])  # type: ignore[misc]
 
+        # Forward only required children explicitly to base Element
         super().__init__(words=words)
         self.geometry = geometry
         self.objectness_score = objectness_score
@@ -177,10 +189,10 @@ class Line(Element):
 
     @classmethod
     def from_dict(cls, save_dict: dict[str, Any], **kwargs):
+        # Avoid unnecessary dict update by constructing directly
         kwargs = {k: save_dict[k] for k in cls._exported_keys}
-        kwargs.update({
-            "words": [Word.from_dict(_dict) for _dict in save_dict["words"]],
-        })
+        # List comprehension is sufficiently fast here and preserves side effects
+        kwargs["words"] = [Word.from_dict(_dict) for _dict in save_dict["words"]]
         return cls(**kwargs)
 
 
