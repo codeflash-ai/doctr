@@ -7,7 +7,6 @@ import string
 import unicodedata
 from collections.abc import Sequence
 from collections.abc import Sequence as SequenceType
-from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -15,7 +14,8 @@ import numpy as np
 from PIL import Image
 
 from doctr.io.image import get_img_shape
-from doctr.utils.geometry import convert_to_relative_coords, extract_crops, extract_rcrops
+from doctr.utils.geometry import (convert_to_relative_coords, extract_crops,
+                                  extract_rcrops)
 
 from .vocabs import VOCABS
 
@@ -136,6 +136,10 @@ def encode_sequences(
     if 0 <= eos < len(vocab):
         raise ValueError("argument 'eos' needs to be outside of vocab possible indices")
 
+    # Build character to index mapping for O(1) encoding (replaces vocab.index)
+    vocab_lookup = {c: i for i, c in enumerate(vocab)}
+
+    # Determine output shape
     if not isinstance(target_size, int) or dynamic_seq_length:
         # Maximum string length + EOS
         max_length = max(len(w) for w in sequences) + 1
@@ -151,20 +155,35 @@ def encode_sequences(
             raise ValueError("argument 'pad' needs to be outside of vocab possible indices")
         # In that case, add EOS at the end of the word before padding
         default_symbol = pad
+        pad_mode = True
     else:  # pad with eos symbol
         default_symbol = eos
+        pad_mode = False
     encoded_data: np.ndarray = np.full([len(sequences), target_size], default_symbol, dtype=np.int32)
 
-    # Encode the strings
-    for idx, seq in enumerate(map(partial(encode_string, vocab=vocab), sequences)):
-        if isinstance(pad, int):  # add eos at the end of the sequence
-            seq.append(eos)
-        encoded_data[idx, : min(len(seq), target_size)] = seq[: min(len(seq), target_size)]
+    # Encode the strings efficiently
+    for idx, s in enumerate(sequences):
+        # Encode using dict for O(1) access
+        try:
+            encoded = [vocab_lookup[c] for c in s]
+        except KeyError as e:
+            missing_chars = [char for char in s if char not in vocab_lookup]
+            raise ValueError(
+                f"Some characters cannot be found in 'vocab': {set(missing_chars)}.\n"
+                f"Please check the input string `{s}` and the vocabulary `{vocab}`"
+            ) from e
+        if pad_mode:
+            encoded.append(eos)
+        valid = min(len(encoded), target_size)
+        encoded_data[idx, :valid] = encoded[:valid]
 
+    # Insert Start Of Sequence code if needed (replace np.roll by direct copy)
     if isinstance(sos, int):  # place sos symbol at the beginning of each sequence
         if 0 <= sos < len(vocab):
             raise ValueError("argument 'sos' needs to be outside of vocab possible indices")
-        encoded_data = np.roll(encoded_data, 1)
+        # Manual efficient shift instead of np.roll
+        # Shift all columns to the right by 1 position
+        encoded_data[:, 1:] = encoded_data[:, :-1]
         encoded_data[:, 0] = sos
 
     return encoded_data
