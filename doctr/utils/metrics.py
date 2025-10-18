@@ -8,6 +8,7 @@ import numpy as np
 from anyascii import anyascii
 from scipy.optimize import linear_sum_assignment
 from shapely.geometry import Polygon
+from shapely.prepared import prep
 
 __all__ = [
     "TextMatch",
@@ -168,11 +169,22 @@ def polygon_iou(polys_1: np.ndarray, polys_2: np.ndarray) -> np.ndarray:
 
     shapely_polys_1 = [Polygon(poly) for poly in polys_1]
     shapely_polys_2 = [Polygon(poly) for poly in polys_2]
+    
+    areas_1 = [poly.area for poly in shapely_polys_1]
+    areas_2 = [poly.area for poly in shapely_polys_2]
+    prepared_1 = [prep(poly) for poly in shapely_polys_1]
+    bounds_2 = [poly.bounds for poly in shapely_polys_2]
 
     for i, poly1 in enumerate(shapely_polys_1):
+        bounds_1 = poly1.bounds
         for j, poly2 in enumerate(shapely_polys_2):
+            if (bounds_1[2] < bounds_2[j][0] or bounds_1[0] > bounds_2[j][2] or
+                bounds_1[3] < bounds_2[j][1] or bounds_1[1] > bounds_2[j][3]):
+                continue
+            if not prepared_1[i].intersects(poly2):
+                continue
             intersection_area = poly1.intersection(poly2).area
-            union_area = poly1.area + poly2.area - intersection_area
+            union_area = areas_1[i] + areas_2[j] - intersection_area
             iou_mat[i, j] = intersection_area / union_area
 
     return iou_mat
