@@ -5,6 +5,7 @@
 
 import random
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -37,7 +38,8 @@ def synthesize_text_img(
     background_color = (0, 0, 0) if background_color is None else background_color
     text_color = (255, 255, 255) if text_color is None else text_color
 
-    font = get_font(font_family, font_size)
+    # Use cached font loader
+    font = _cached_get_font(font_family, font_size)
     left, top, right, bottom = font.getbbox(text)
     text_w, text_h = right - left, bottom - top
     h, w = int(round(1.3 * text_h)), int(round(1.1 * text_w))
@@ -52,6 +54,13 @@ def synthesize_text_img(
     # Draw the text
     d.text(text_pos, text, font=font, fill=text_color)
     return img
+
+
+# Cache the get_font call for faster repeated access
+@lru_cache(maxsize=32)
+def _cached_get_font(font_family: str | None, font_size: int):
+    # get_font returns ImageFont or ImageFont.FreeTypeFont, both hashable by file/size
+    return get_font(font_family, font_size)
 
 
 class _CharacterGenerator(AbstractDataset):
