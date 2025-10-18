@@ -32,11 +32,15 @@ def string_match(word1: str, word2: str) -> tuple[bool, bool, bool, bool]:
             anyascii counterparts and their lower-case anyascii counterparts match
     """
     raw_match = word1 == word2
-    caseless_match = word1.lower() == word2.lower()
-    anyascii_match = anyascii(word1) == anyascii(word2)
-
-    # Warning: the order is important here otherwise the pair ("EUR", "€") cannot be matched
-    unicase_match = anyascii(word1).lower() == anyascii(word2).lower()
+    # Avoid recomputing lower
+    word1_lower = word1.lower()
+    word2_lower = word2.lower()
+    caseless_match = word1_lower == word2_lower
+    # Avoid recomputing anyascii
+    word1_ascii = anyascii(word1)
+    word2_ascii = anyascii(word2)
+    anyascii_match = word1_ascii == word2_ascii
+    unicase_match = word1_ascii.lower() == word2_ascii.lower()  # order is important
 
     return raw_match, caseless_match, anyascii_match, unicase_match
 
