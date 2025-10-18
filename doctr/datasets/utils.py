@@ -47,23 +47,28 @@ def translate(
     Returns:
         A string translated in a given vocab
     """
-    if VOCABS.get(vocab_name) is None:
+    vocab = VOCABS.get(vocab_name)
+    if vocab is None:
         raise KeyError("output vocabulary must be in vocabs dictionary")
 
-    translated = ""
+    vocab_set = vocab
+    whitespace = set(string.whitespace)
+    translated_chars = []
+    append = translated_chars.append
+
     for char in input_string:
-        if char not in VOCABS[vocab_name]:
-            # we need to translate char into a vocab char
-            if char in string.whitespace:
-                # remove whitespaces
-                continue
-            # normalize character if it is not in vocab
-            char = unicodedata.normalize("NFD", char).encode("ascii", "ignore").decode("ascii")
-            if char == "" or char not in VOCABS[vocab_name]:
-                # if normalization fails or char still not in vocab, return unknown character)
-                char = unknown_char
-        translated += char
-    return translated
+        if char in vocab_set:
+            append(char)
+            continue
+        if char in whitespace:
+            continue
+        # Normalize character if it is not in vocab
+        norm_char = unicodedata.normalize("NFD", char).encode("ascii", "ignore").decode("ascii")
+        if not norm_char or norm_char not in vocab_set:
+            append(unknown_char)
+        else:
+            append(norm_char)
+    return ''.join(translated_chars)
 
 
 def encode_string(
