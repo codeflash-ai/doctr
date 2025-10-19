@@ -216,9 +216,16 @@ def remap_boxes(loc_preds: np.ndarray, orig_shape: tuple[int, int], dest_shape: 
         raise ValueError(f"Image_shape length should be 2, was found at: {len(orig_shape)}")
     orig_height, orig_width = orig_shape
     dest_height, dest_width = dest_shape
+    # Avoid unnecessary memory allocation if loc_preds is already safe to modify
+    # But numpy does not guarantee views for advanced indexing; .copy() is necessary
     mboxes = loc_preds.copy()
-    mboxes[:, :, 0] = ((loc_preds[:, :, 0] * orig_width) + (dest_width - orig_width) / 2) / dest_width
-    mboxes[:, :, 1] = ((loc_preds[:, :, 1] * orig_height) + (dest_height - orig_height) / 2) / dest_height
+    # Avoid repeated attribute lookup & calculation
+    ow = orig_width
+    dw = dest_width
+    oh = orig_height
+    dh = dest_height
+    mboxes[:, :, 0] = ((loc_preds[:, :, 0] * ow) + (dw - ow) / 2) / dw
+    mboxes[:, :, 1] = ((loc_preds[:, :, 1] * oh) + (dh - oh) / 2) / dh
 
     return mboxes
 
@@ -248,30 +255,42 @@ def rotate_boxes(
     # Change format of the boxes to rotated boxes
     _boxes = loc_preds.copy()
     if _boxes.ndim == 2:
-        _boxes = np.stack(
-            [
-                _boxes[:, [0, 1]],
-                _boxes[:, [2, 1]],
-                _boxes[:, [2, 3]],
-                _boxes[:, [0, 3]],
-            ],
-            axis=1,
-        )
+        # Use np.empty and np.ndarray assignment for faster stacking than np.stack
+        N = _boxes.shape[0]
+        boxes_rot = np.empty((N, 4, 2), dtype=_boxes.dtype)
+        boxes_rot[:, 0] = _boxes[:, [0, 1]]
+        boxes_rot[:, 1] = _boxes[:, [2, 1]]
+        boxes_rot[:, 2] = _boxes[:, [2, 3]]
+        boxes_rot[:, 3] = _boxes[:, [0, 3]]
+        _boxes = boxes_rot
     # If small angle, return boxes (no rotation)
     if abs(angle) < min_angle or abs(angle) > 90 - min_angle:
         return _boxes
     # Compute rotation matrix
     angle_rad = angle * np.pi / 180.0  # compute radian angle for np functions
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
     rotation_mat = np.array(
-        [[np.cos(angle_rad), -np.sin(angle_rad)], [np.sin(angle_rad), np.cos(angle_rad)]], dtype=_boxes.dtype
+        [[cos_a, -sin_a], [sin_a, cos_a]], dtype=_boxes.dtype
     )
-    # Rotate absolute points
-    points: np.ndarray = np.stack((_boxes[:, :, 0] * orig_shape[1], _boxes[:, :, 1] * orig_shape[0]), axis=-1)
-    image_center = (orig_shape[1] / 2, orig_shape[0] / 2)
-    rotated_points = image_center + np.matmul(points - image_center, rotation_mat)
-    rotated_boxes: np.ndarray = np.stack(
-        (rotated_points[:, :, 0] / orig_shape[1], rotated_points[:, :, 1] / orig_shape[0]), axis=-1
-    )
+    orig_width, orig_height = orig_shape[1], orig_shape[0]
+    # Compose points array via direct multiplication and stacking for efficiency
+    # Use np.empty for less memory churn
+    N = _boxes.shape[0]
+    pts = np.empty((N, 4, 2), dtype=_boxes.dtype)
+    # Compute absolute coordinates only once
+    pts[:, :, 0] = _boxes[:, :, 0] * orig_width
+    pts[:, :, 1] = _boxes[:, :, 1] * orig_height
+    image_center = np.array([orig_width / 2, orig_height / 2], dtype=_boxes.dtype)
+    # Subtract image center
+    pts_centered = pts - image_center
+    # Efficient batch matrix multiply for (N, 4, 2) @ (2, 2)
+    rotated_points = np.einsum('nij,jk->nik', pts_centered, rotation_mat)
+    rotated_points += image_center
+    # Normalize rotated points to relative coordinates
+    rotated_boxes = np.empty_like(_boxes)
+    rotated_boxes[:, :, 0] = rotated_points[:, :, 0] / orig_width
+    rotated_boxes[:, :, 1] = rotated_points[:, :, 1] / orig_height
 
     # Apply a mask if requested
     if target_shape is not None:
