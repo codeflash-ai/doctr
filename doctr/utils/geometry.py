@@ -416,7 +416,7 @@ def extract_crops(img: np.ndarray, boxes: np.ndarray) -> list[np.ndarray]:
         # Add last index
         _boxes[2:] += 1
 
-    return deepcopy([img[box[1] : box[3], box[0] : box[2]] for box in _boxes])
+    return [img[box[1] : box[3], box[0] : box[2]] for box in _boxes]
 
 
 def extract_rcrops(
