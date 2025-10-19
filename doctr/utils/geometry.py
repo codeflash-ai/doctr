@@ -129,10 +129,14 @@ def rotate_abs_points(points: np.ndarray, angle: float = 0.0) -> np.ndarray:
         Rotated points
     """
     angle_rad = angle * np.pi / 180.0  # compute radian angle for np functions
-    rotation_mat = np.array(
-        [[np.cos(angle_rad), -np.sin(angle_rad)], [np.sin(angle_rad), np.cos(angle_rad)]], dtype=points.dtype
-    )
-    return np.matmul(points, rotation_mat.T)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+    rotation_mat = np.empty((2, 2), dtype=points.dtype)
+    rotation_mat[0, 0] = cos_a
+    rotation_mat[0, 1] = -sin_a
+    rotation_mat[1, 0] = sin_a
+    rotation_mat[1, 1] = cos_a
+    return np.dot(points, rotation_mat.T)
 
 
 def compute_expanded_shape(img_shape: tuple[int, int], angle: float) -> tuple[int, int]:
