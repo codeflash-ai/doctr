@@ -173,16 +173,16 @@ class GaussianBlur(torch.nn.Module):
         sigma = torch.empty(1).uniform_(*self.sigma_range).item()
 
         # Apply Gaussian blur along spatial dimensions only
-        blurred = torch.tensor(
-            gaussian_filter(
-                x.numpy(),
-                sigma=sigma,
-                mode="reflect",
-                truncate=4.0,
-            ),
-            dtype=x.dtype,
-            device=x.device,
+        # Avoid extra copies: use asarray to avoid copying if x is already a numpy array
+        arr = x.cpu().numpy() if x.device.type != 'cpu' else x.numpy()
+        filtered = gaussian_filter(
+            arr,
+            sigma=sigma,
+            mode="reflect",
+            truncate=4.0,
         )
+        # Use torch.from_numpy for zero-copy when possible
+        blurred = torch.from_numpy(filtered).to(x.dtype).to(x.device)
         return blurred
 
 
