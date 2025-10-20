@@ -57,7 +57,8 @@ def expand_line(line: np.ndarray, target_shape: tuple[int, int]) -> tuple[float,
     Returns:
         2D coordinates of the first point once we extended the line (on one of the edges)
     """
-    if any(coord == 0 or coord == size for coord, size in zip(line[0], target_shape[::-1])):
+    if (line[0][0] == 0 or line[0][0] == target_shape[1] or 
+        line[0][1] == 0 or line[0][1] == target_shape[0]):
         return line[0]
     # Get the line equation
     _tmp = line[1] - line[0]
@@ -96,12 +97,13 @@ def expand_line(line: np.ndarray, target_shape: tuple[int, int]) -> tuple[float,
         ]
     for point in solutions:
         # Skip points that are out of the final image
-        if any(val < 0 or val > size for val, size in zip(point, target_shape[::-1])):
+        if (point[0] < 0 or point[0] > target_shape[1] or 
+            point[1] < 0 or point[1] > target_shape[0]):
             continue
-        if all(
-            val == ref if _same else (val < ref if _dir else val > ref)
-            for val, ref, _dir, _same in zip(point, line[1], _direction, _flat)
-        ):
+        if ((point[0] == line[1][0] if _flat[0] else 
+             (point[0] < line[1][0] if _direction[0] else point[0] > line[1][0])) and
+            (point[1] == line[1][1] if _flat[1] else 
+             (point[1] < line[1][1] if _direction[1] else point[1] > line[1][1]))):
             return point
     raise ValueError
 
