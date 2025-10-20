@@ -202,12 +202,13 @@ class RandomHorizontalFlip(T.RandomHorizontalFlip):
     """Randomly flip the input image horizontally"""
 
     def forward(self, img: torch.Tensor | Image, target: np.ndarray) -> tuple[torch.Tensor | Image, np.ndarray]:
-        if torch.rand(1) < self.p:
+        if torch.rand(1).item() < self.p:
             _img = F.hflip(img)
             _target = target.copy()
             # Changing the relative bbox coordinates
             if target.shape[1:] == (4,):
-                _target[:, ::2] = 1 - target[:, [2, 0]]
+                _target[:, 0] = 1 - target[:, 2]
+                _target[:, 2] = 1 - target[:, 0]
             else:
                 _target[..., 0] = 1 - target[..., 0]
             return _img, _target
