@@ -182,17 +182,24 @@ def rotate_abs_geoms(
     )
     polys = polys.astype(np.float32)
 
+    # Pre-calculate half dimensions to avoid repeated division
+    half_w = img_shape[1] / 2
+    half_h = img_shape[0] / 2
+
     # Switch to image center as referential
-    polys[..., 0] -= img_shape[1] / 2
-    polys[..., 1] = img_shape[0] / 2 - polys[..., 1]
+    polys[..., 0] -= half_w
+    polys[..., 1] = half_h - polys[..., 1]
 
     # Rotated them around image center
     rotated_polys = rotate_abs_points(polys.reshape(-1, 2), angle).reshape(-1, 4, 2)
     # Switch back to top-left corner as referential
     target_shape = compute_expanded_shape(img_shape, angle) if expand else img_shape
+    # Pre-calculate half target dimensions
+    half_target_w = target_shape[1] / 2
+    half_target_h = target_shape[0] / 2
     # Clip coords to fit since there is no expansion
-    rotated_polys[..., 0] = (rotated_polys[..., 0] + target_shape[1] / 2).clip(0, target_shape[1])
-    rotated_polys[..., 1] = (target_shape[0] / 2 - rotated_polys[..., 1]).clip(0, target_shape[0])
+    rotated_polys[..., 0] = (rotated_polys[..., 0] + half_target_w).clip(0, target_shape[1])
+    rotated_polys[..., 1] = (half_target_h - rotated_polys[..., 1]).clip(0, target_shape[0])
 
     return rotated_polys
 
